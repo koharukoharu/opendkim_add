@@ -1,0 +1,95 @@
+---
+- name: add epel repo
+  yum: 
+    name:
+      - epel-release
+    state: installed
+
+- name: epel enable
+  shell: yum-config-manager --enable epel
+
+- name: opendkim installed
+  yum:
+    name:
+      - opendkim
+    state: installed
+
+- name: opendkim directory
+  file: >
+    path=/etc/opendkim
+    state=directory
+
+- name: opendkim keys directory
+  file: >
+    path=/etc/opendkim/keys
+    state=directory
+
+- name: opendkim TrustedHosts configuration
+  copy:
+    src: TrustedHosts
+    dest: /etc/opendkim/TrustedHosts
+  notify:
+    - restart opendkim
+
+- name: opendkim configuration
+  copy:
+    src: opendkim.conf
+    dest: /etc/opendkim.conf
+  notify:
+    - restart opendkim
+
+- name: get postfix domain name
+  shell: postconf -n | grep "mydomain =" | sed -e "s/mydomain = //g"
+  register: domain
+  changed_when: false
+
+- name: check dkim-gen-key
+  stat:
+    path: /etc/opendkim/keys/dkimselector.txt
+  register: key_check
+
+- name: create dkim-gen-key
+  shell: opendkim-genkey -D /etc/opendkim/keys/ -d {{domain.stdout}} -s dkimselector
+  when: not key_check.stat.exists
+
+- name: chown dkim-gen-key
+  shell: chown opendkim:opendkim /etc/opendkim/keys/*
+
+- name: opendkim KeyTable configuration
+  template:
+    src: KeyTable.j2
+    dest: /etc/opendkim/KeyTable
+  notify:
+    - restart opendkim
+
+- name: opendkim SigningTable configuration
+  template:
+    src: SigningTable.j2
+    dest: /etc/opendkim/SigningTable
+  notify:
+    - restart opendkim
+
+- name: opendkim start and enabled
+  service:
+    name: opendkim
+    state: started
+    enabled: yes
+
+- name: check main.cf
+  shell: grep "# OpenDKIM and OpenDMARC" /etc/postfix/main.cf
+  register: main_cf_check
+  changed_when: false
+  failed_when: main_cf_check.rc > 2
+
+- name: add postfix main.cf
+  shell: |
+        echo "# OpenDKIM and OpenDMARC" >> /etc/postfix/main.cf
+        echo "smtpd_milters = inet:127.0.0.1:8891" >> /etc/postfix/main.cf
+        echo 'non_smtpd_milters = $smtpd_milters' >> /etc/postfix/main.cf
+        echo "milter_default_action = accept" >> /etc/postfix/main.cf
+  when: main_cf_check.rc == 1
+
+- name: restart postfix
+  service:
+    name: postfix
+    state: restarted
